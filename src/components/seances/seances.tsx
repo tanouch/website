@@ -2,18 +2,33 @@
 
 import clsx from "clsx";
 import { min, sortBy, take } from "lodash-es";
-import { useCallback, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import React from "react";
 
 import { transformZipcode } from "@/components/theaters/theaters";
 import { TheaterScreenings } from "@/lib/types";
-import { floatHourToString } from "@/lib/util";
+import { floatHourToString, safeDate } from "@/lib/util";
 
+import {
+  DialogMovie,
+  hashSeance,
+  useSeanceDialogStore,
+} from "../seance-dialog/seance-dialog";
 import { CalendrierCopy } from "../typography/typography";
 
 export default function Seances({
+  movie,
+  day,
   screenings,
 }: {
+  movie: DialogMovie;
+  day: string;
   screenings: TheaterScreenings[];
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -52,6 +67,8 @@ export default function Seances({
     >
       {(isExpanded ? sortedTheaters : unexpandedTheaters).map((theater) => (
         <SeancesTheater
+          day={day}
+          movie={movie}
           showtimesTheater={theater}
           key={theater.name}
           isExpanded={isExpanded}
@@ -111,10 +128,47 @@ export function FormatNotes({
   );
 }
 
-export function SeancesTheater({
+function toSeance({
+  day,
+  movie,
+  time,
+  theaterName,
+}: {
+  day: string;
+  movie: DialogMovie;
+  time: number;
+  theaterName: string;
+}) {
+  const date = safeDate(day).set({
+    hour: Math.floor(time),
+    minute: Number((60 * (time - Math.floor(time))).toPrecision(2)),
+  });
+  return {
+    movieDate: date,
+    movieTheater: theaterName,
+    movie,
+  };
+}
+
+function useHash() {
+  return useSyncExternalStore(
+    (callback) => {
+      addEventListener("hashchange", callback);
+      return () => removeEventListener("hashchange", callback);
+    },
+    () => window.location.hash.slice(1),
+    () => "",
+  );
+}
+
+function SeancesTheater({
+  movie,
+  day,
   showtimesTheater,
   isExpanded,
 }: {
+  movie: DialogMovie;
+  day: string;
   showtimesTheater: TheaterScreenings;
   isExpanded: boolean;
 }) {
@@ -122,6 +176,41 @@ export function SeancesTheater({
     Object.values(showtimesTheater.seances),
     (screening) => screening.time,
   );
+  const hash = useHash();
+
+  const setSeance = useSeanceDialogStore((s) => s.setSeance);
+
+  const showDialog = useCallback(
+    ({ time }: { time: number }) => {
+      setSeance(
+        toSeance({
+          movie,
+          day,
+          time,
+          theaterName: showtimesTheater.name,
+        }),
+      );
+    },
+    [day, movie, setSeance, showtimesTheater.name],
+  );
+
+  useEffect(() => {
+    if (hash === "") {
+      return;
+    }
+
+    screenings.forEach(async ({ time }) => {
+      if (
+        (await hashSeance(
+          toSeance({ day, movie, time, theaterName: showtimesTheater.name }),
+        )) === hash
+      ) {
+        const urlWithoutHash = window.location.href.split("#")[0];
+        window.history.replaceState({}, document.title, urlWithoutHash);
+        showDialog({ time });
+      }
+    });
+  }, [day, hash, movie, screenings, showDialog, showtimesTheater.name]);
 
   return (
     <div
@@ -144,7 +233,9 @@ export function SeancesTheater({
             })}
           >
             <CalendrierCopy className="text-right lg:text-left">
-              {floatHourToString(screening.time)}
+              <button onClick={() => showDialog({ time: screening.time })}>
+                {floatHourToString(screening.time)}
+              </button>
               {screening.notes != null && (
                 <span className="text-retro-gray">
                   &nbsp;
